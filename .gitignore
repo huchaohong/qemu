@@ -109,3 +109,5 @@ cscope.*
 tags
 TAGS
 *~
+config.sh
+common.env
