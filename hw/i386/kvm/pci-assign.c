@@ -87,6 +87,12 @@ typedef struct AssignedDevRegion {
     pcibus_t e_size;    /* emulated size of region in bytes */
     pcibus_t r_size;    /* real size of region in bytes */
     PCIRegion *region;
+
+    /*for intel igd*/
+    uint8_t *r_virtbase_gfx_mmio;
+    uint8_t *r_virtbase_gtt;
+    MemoryRegion gfx_mmio;
+    MemoryRegion gtt;
 } AssignedDevRegion;
 
 #define ASSIGNED_DEVICE_PREFER_MSI_BIT  0
@@ -394,6 +400,18 @@ static uint8_t pci_find_cap_offset(PCIDevice *d, uint8_t cap, uint8_t start)
     return 0;
 }
 
+// 判断是否是igd设备，依据是host pci设备的bdf
+static int is_igd(AssignedDevice *pci_dev){
+  if (pci_dev->host.domain == 0 &&
+      pci_dev->host.bus == 0 &&
+      pci_dev->host.slot == 2 &&
+      pci_dev->host.function == 0){
+    return 1;
+  }
+
+  return 0;
+}
+
 static void assigned_dev_register_regions(PCIRegion *io_regions,
                                           unsigned long regions_num,
                                           AssignedDevice *pci_dev,
@@ -417,26 +435,65 @@ static void assigned_dev_register_regions(PCIRegion *io_regions,
                 t |= PCI_BASE_ADDRESS_MEM_TYPE_64;
             }
 
-            /* map physical memory */
-            pci_dev->v_addrs[i].u.r_virtbase = mmap(NULL, cur_region->size,
-                                                    PROT_WRITE | PROT_READ,
-                                                    MAP_SHARED,
-                                                    cur_region->resource_fd,
-                                                    (off_t)0);
+            if (is_igd(pci_dev) && i == 0){
+              /* map physical memory */
+              pci_dev->v_addrs[i].r_virtbase_gfx_mmio = mmap(NULL, cur_region->size/2,
+                                                      PROT_WRITE | PROT_READ,
+                                                      MAP_SHARED,
+                                                      cur_region->resource_fd,
+                                                      (off_t)0);
 
-            if (pci_dev->v_addrs[i].u.r_virtbase == MAP_FAILED) {
-                pci_dev->v_addrs[i].u.r_virtbase = NULL;
-                error_setg_errno(errp, errno, "Couldn't mmap 0x%" PRIx64 "!",
-                                 cur_region->base_addr);
-                return;
+              if (pci_dev->v_addrs[i].r_virtbase_gfx_mmio == MAP_FAILED) {
+                  pci_dev->v_addrs[i].r_virtbase_gfx_mmio = NULL;
+                  error_setg_errno(errp, errno, "Couldn't mmap 0x%" PRIx64 "!",
+                                   cur_region->base_addr);
+                  return;
+              }
+              
+              pci_dev->v_addrs[i].r_virtbase_gtt = mmap(NULL, cur_region->size/2,
+                                                      PROT_WRITE | PROT_READ,
+                                                      MAP_SHARED,
+                                                      cur_region->resource_fd,
+                                                      (off_t)cur_region->size/2);
+
+              if (pci_dev->v_addrs[i].r_virtbase_gtt == MAP_FAILED) {
+                  pci_dev->v_addrs[i].r_virtbase_gtt = NULL;
+                  error_setg_errno(errp, errno, "Couldn't mmap 0x%" PRIx64 "!",
+                                   cur_region->base_addr + cur_region->size/2);
+                  return;
+              }
+            }else{
+              /* map physical memory */
+              pci_dev->v_addrs[i].u.r_virtbase = mmap(NULL, cur_region->size,
+                                                      PROT_WRITE | PROT_READ,
+                                                      MAP_SHARED,
+                                                      cur_region->resource_fd,
+                                                      (off_t)0);
+
+              if (pci_dev->v_addrs[i].u.r_virtbase == MAP_FAILED) {
+                  pci_dev->v_addrs[i].u.r_virtbase = NULL;
+                  error_setg_errno(errp, errno, "Couldn't mmap 0x%" PRIx64 "!",
+                                   cur_region->base_addr);
+                  return;
+              }
             }
 
             pci_dev->v_addrs[i].r_size = cur_region->size;
             pci_dev->v_addrs[i].e_size = 0;
 
-            /* add offset */
-            pci_dev->v_addrs[i].u.r_virtbase +=
+            if (is_igd(pci_dev) && i == 0){
+              /* add offset*/
+              pci_dev->v_addrs[i].r_virtbase_gfx_mmio +=
                 (cur_region->base_addr & 0xFFF);
+              pci_dev->v_addrs[i].r_virtbase_gtt +=
+                ((cur_region->base_addr + cur_region->size/2) & 0xFFF);
+            }else{
+              /* add offset */
+              pci_dev->v_addrs[i].u.r_virtbase +=
+                  (cur_region->base_addr & 0xFFF);
+              
+            }
+
 
             if (cur_region->size & 0xFFF) {
                 error_report("PCI region %d at address 0x%" PRIx64 " has "
@@ -454,11 +511,38 @@ static void assigned_dev_register_regions(PCIRegion *io_regions,
                 char name[32];
                 snprintf(name, sizeof(name), "%s.bar%d",
                          object_get_typename(OBJECT(pci_dev)), i);
-                memory_region_init_ram_ptr(&pci_dev->v_addrs[i].real_iomem,
-                                           OBJECT(pci_dev), name,
-                                           cur_region->size, virtbase);
-                vmstate_register_ram(&pci_dev->v_addrs[i].real_iomem,
-                                     &pci_dev->dev.qdev);
+
+                if (is_igd(pci_dev) && i ==0){
+                  void *virtbase_gfx_mmio = pci_dev->v_addrs[i].r_virtbase_gfx_mmio;
+                  void *virtbase_gtt = pci_dev->v_addrs[i].r_virtbase_gtt;
+
+                  memory_region_init(&pci_dev->v_addrs[i].real_iomem,
+                                      OBJECT(pci_dev), name, cur_region->size);
+                  memory_region_init_ram_ptr(&pci_dev->v_addrs[i].gfx_mmio,
+                                              OBJECT(pci_dev), "igd_mmio",
+                                              cur_region->size/2, virtbase_gfx_mmio);
+                  memory_region_init_ram_ptr(&pci_dev->v_addrs[i].gtt,
+                                              OBJECT(pci_dev), "igd_gtt",
+                                              cur_region->size/2, virtbase_gtt);
+                  
+                  memory_region_add_subregion(&pci_dev->v_addrs[i].real_iomem, 0, &pci_dev->v_addrs[i].gfx_mmio);
+                  memory_region_add_subregion(&pci_dev->v_addrs[i].real_iomem, cur_region->size/2, &pci_dev->v_addrs[i].gtt);
+                  
+
+                  vmstate_register_ram(&pci_dev->v_addrs[i].gfx_mmio,
+                                       &pci_dev->dev.qdev);
+
+                  vmstate_register_ram(&pci_dev->v_addrs[i].gtt,
+                                       &pci_dev->dev.qdev);
+
+                }else{
+                  memory_region_init_ram_ptr(&pci_dev->v_addrs[i].real_iomem,
+                                             OBJECT(pci_dev), name,
+                                             cur_region->size, virtbase);
+
+                  vmstate_register_ram(&pci_dev->v_addrs[i].real_iomem,
+                                       &pci_dev->dev.qdev);
+                }
             }
 
             assigned_dev_iomem_setup(&pci_dev->dev, i, cur_region->size);
@@ -803,11 +887,13 @@ static void assign_device(AssignedDevice *dev, Error **errp)
         return;
     }
 
+#if 0
     if (!kvm_check_extension(kvm_state, KVM_CAP_IOMMU)) {
         error_setg(errp, "No IOMMU found.  Unable to assign device \"%s\"",
                    dev->dev.qdev.id);
         return;
     }
+#endif
 
     if (dev->features & ASSIGNED_DEVICE_SHARE_INTX_MASK &&
         kvm_has_intx_set_mask()) {
