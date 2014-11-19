@@ -201,10 +201,47 @@ static uint32_t slow_bar_readb(void *opaque, hwaddr addr)
     return r;
 }
 
+static uint32_t slow_bar_readb_gfxmmadr(void *opaque, hwaddr addr)
+{
+    AssignedDevRegion *d = opaque;
+
+    uint8_t *in;
+    if (addr < 0x200000){
+      in = d->r_virtbase_gfx_mmio + addr;
+    }else{
+      in = d->r_virtbase_gtt + addr;
+    }
+
+    uint32_t r;
+
+    r = *in;
+    DEBUG("addr=0x" TARGET_FMT_plx " val=0x%08x\n", addr, r);
+
+    return r;
+}
+
 static uint32_t slow_bar_readw(void *opaque, hwaddr addr)
 {
     AssignedDevRegion *d = opaque;
     uint16_t *in = (uint16_t *)(d->u.r_virtbase + addr);
+    uint32_t r;
+
+    r = *in;
+    DEBUG("addr=0x" TARGET_FMT_plx " val=0x%08x\n", addr, r);
+
+    return r;
+}
+
+static uint32_t slow_bar_readw_gfxmmadr(void *opaque, hwaddr addr)
+{
+    AssignedDevRegion *d = opaque;
+  
+    uint16_t *in;
+    if (addr < 0x200000){
+      in = (uint16_t *)(d->r_virtbase_gfx_mmio + addr);
+    }else{
+      in = (uint16_t *)(d->r_virtbase_gtt + addr);
+    }
     uint32_t r;
 
     r = *in;
@@ -225,10 +262,44 @@ static uint32_t slow_bar_readl(void *opaque, hwaddr addr)
     return r;
 }
 
+static uint32_t slow_bar_readl_gfxmmadr(void *opaque, hwaddr addr)
+{
+    AssignedDevRegion *d = opaque;
+
+    uint32_t *in;
+    if (addr < 0x200000){
+      in = (uint32_t *)(d->r_virtbase_gfx_mmio + addr);
+    }else{
+      in = (uint32_t *)(d->r_virtbase_gtt + addr);
+    }
+
+    uint32_t r;
+
+    r = *in;
+    DEBUG("addr=0x" TARGET_FMT_plx " val=0x%08x\n", addr, r);
+
+    return r;
+}
+
 static void slow_bar_writeb(void *opaque, hwaddr addr, uint32_t val)
 {
     AssignedDevRegion *d = opaque;
     uint8_t *out = d->u.r_virtbase + addr;
+
+    DEBUG("addr=0x" TARGET_FMT_plx " val=0x%02x\n", addr, val);
+    *out = val;
+}
+
+static void slow_bar_writeb_gfxmmadr(void *opaque, hwaddr addr, uint32_t val)
+{
+    AssignedDevRegion *d = opaque;
+
+    uint8_t *out;
+    if (addr < 0x200000){
+      out = d->r_virtbase_gfx_mmio + addr;
+    }else{
+      out = d->r_virtbase_gtt + addr;
+    }
 
     DEBUG("addr=0x" TARGET_FMT_plx " val=0x%02x\n", addr, val);
     *out = val;
@@ -243,6 +314,21 @@ static void slow_bar_writew(void *opaque, hwaddr addr, uint32_t val)
     *out = val;
 }
 
+static void slow_bar_writew_gfxmmadr(void *opaque, hwaddr addr, uint32_t val)
+{
+    AssignedDevRegion *d = opaque;
+
+    uint16_t *out;
+    if (addr < 0x200000){
+      out = (uint16_t *)(d->r_virtbase_gfx_mmio + addr);
+    }else{
+      out = (uint16_t *)(d->r_virtbase_gtt + addr);
+    }
+
+    DEBUG("addr=0x" TARGET_FMT_plx " val=0x%04x\n", addr, val);
+    *out = val;
+}
+
 static void slow_bar_writel(void *opaque, hwaddr addr, uint32_t val)
 {
     AssignedDevRegion *d = opaque;
@@ -252,10 +338,34 @@ static void slow_bar_writel(void *opaque, hwaddr addr, uint32_t val)
     *out = val;
 }
 
+static void slow_bar_writel_gfxmmadr(void *opaque, hwaddr addr, uint32_t val)
+{
+    AssignedDevRegion *d = opaque;
+
+    uint32_t *out;
+    if (addr < 0x200000){
+      out = (uint32_t *)(d->r_virtbase_gfx_mmio + addr);
+    }else{
+      out = (uint32_t *)(d->r_virtbase_gtt + addr);
+    }
+
+    DEBUG("addr=0x" TARGET_FMT_plx " val=0x%08x\n", addr, val);
+    *out = val;
+}
+
+
 static const MemoryRegionOps slow_bar_ops = {
     .old_mmio = {
         .read = { slow_bar_readb, slow_bar_readw, slow_bar_readl, },
         .write = { slow_bar_writeb, slow_bar_writew, slow_bar_writel, },
+    },
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
+static const MemoryRegionOps slow_bar_ops_gfxmmadr = {
+    .old_mmio = {
+        .read = { slow_bar_readb_gfxmmadr, slow_bar_readw_gfxmmadr, slow_bar_readl_gfxmmadr, },
+        .write = { slow_bar_writeb_gfxmmadr, slow_bar_writew_gfxmmadr, slow_bar_writel_gfxmmadr, },
     },
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
@@ -476,6 +586,7 @@ static void assigned_dev_register_regions(PCIRegion *io_regions,
                                    cur_region->base_addr);
                   return;
               }
+
             }
 
             pci_dev->v_addrs[i].r_size = cur_region->size;
@@ -495,6 +606,38 @@ static void assigned_dev_register_regions(PCIRegion *io_regions,
             }
 
 
+#if 0
+            if (is_igd(pci_dev) && i == 0){
+              memory_region_init(&pci_dev->v_addrs[i].real_iomem,
+                                  OBJECT(pci_dev), "assigned-dev-slow-bar" , cur_region->size);
+
+              memory_region_init_io(&pci_dev->v_addrs[i].gfx_mmio,
+                                  OBJECT(pci_dev), &slow_bar_ops_gfxmmadr,
+                                  &pci_dev->v_addrs[i],
+                                  "assigned-dev-slow-bar-gfxmmadr",
+                                  cur_region->size/2);
+
+              memory_region_init_io(&pci_dev->v_addrs[i].gtt,
+                                  OBJECT(pci_dev), &slow_bar_ops_gfxmmadr,
+                                  &pci_dev->v_addrs[i],
+                                  "assigned-dev-slow-bar-gfxmmadr",
+                                  cur_region->size/2);
+
+
+              memory_region_add_subregion(&pci_dev->v_addrs[i].real_iomem, 0, &pci_dev->v_addrs[i].gfx_mmio);
+              memory_region_add_subregion(&pci_dev->v_addrs[i].real_iomem, cur_region->size/2, &pci_dev->v_addrs[i].gtt);
+              
+            }else{
+              memory_region_init_io(&pci_dev->v_addrs[i].real_iomem,
+                                  OBJECT(pci_dev), &slow_bar_ops,
+                                  &pci_dev->v_addrs[i],
+                                  "assigned-dev-slow-bar",
+                                  cur_region->size);
+            }
+            
+#endif            
+            
+#if 1
             if (cur_region->size & 0xFFF) {
                 error_report("PCI region %d at address 0x%" PRIx64 " has "
                              "size 0x%" PRIx64 ", which is not a multiple of "
@@ -544,6 +687,7 @@ static void assigned_dev_register_regions(PCIRegion *io_regions,
                                        &pci_dev->dev.qdev);
                 }
             }
+#endif
 
             assigned_dev_iomem_setup(&pci_dev->dev, i, cur_region->size);
             pci_register_bar((PCIDevice *) pci_dev, i, t,
@@ -1289,6 +1433,7 @@ static void assigned_dev_pci_write_config(PCIDevice *pci_dev, uint32_t address,
         if (intx_masked != !!(old_cmd & PCI_COMMAND_INTX_DISABLE)) {
             ret = kvm_device_intx_set_mask(kvm_state, assigned_dev->dev_id,
                                            intx_masked);
+
             if (ret) {
                 perror("assigned_dev_pci_write_config: set intx mask");
             }
