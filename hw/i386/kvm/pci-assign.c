@@ -48,16 +48,18 @@
 #define IORESOURCE_PREFETCH 0x00002000  /* No side effects */
 #define IORESOURCE_MEM_64   0x00100000
 
-//#define DEVICE_ASSIGNMENT_DEBUG
+#define DEVICE_ASSIGNMENT_DEBUG
 
 #ifdef DEVICE_ASSIGNMENT_DEBUG
 #define DEBUG(fmt, ...)                                       \
     do {                                                      \
-        fprintf(stderr, "%s: " fmt, __func__ , __VA_ARGS__);  \
+        fprintf(stderr, "%s: " fmt, __func__ , ##__VA_ARGS__);  \
     } while (0)
 #else
 #define DEBUG(fmt, ...)
 #endif
+
+//#define DEBUG_MEM_MAP
 
 #define VGA_LOWMEM  0xa0000
 #define VGA_LOWMEM_SIZE  0x20000
@@ -413,6 +415,8 @@ static const MemoryRegionOps assigned_dev_ioport_ops = {
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
+
+
 static void assigned_dev_ioport_setup(PCIDevice *pci_dev, int region_num,
                                       pcibus_t size)
 {
@@ -617,7 +621,7 @@ static void assigned_dev_register_regions(PCIRegion *io_regions,
             }
 
 
-#if 0
+#ifdef DEBUG_MEM_MAP
             if (is_igd(pci_dev) && i == 0){
               memory_region_init(&pci_dev->v_addrs[i].real_iomem,
                                   OBJECT(pci_dev), "assigned-dev-slow-bar" , cur_region->size);
@@ -646,9 +650,7 @@ static void assigned_dev_register_regions(PCIRegion *io_regions,
                                   cur_region->size);
             }
             
-#endif            
-            
-#if 1
+#else
             if (cur_region->size & 0xFFF) {
                 error_report("PCI region %d at address 0x%" PRIx64 " has "
                              "size 0x%" PRIx64 ", which is not a multiple of "
@@ -1994,6 +1996,25 @@ static void reset_assigned_device(DeviceState *dev)
     assigned_dev_pci_write_config(pci_dev, PCI_COMMAND, 0, 1);
 }
 
+static uint64_t vga_lowmem_test_read(void *opaque,
+                                         hwaddr addr, unsigned size)
+{
+    DEBUG("addr: 0x%08"PRIx64", size: %d\n", addr, size);
+    return 0;
+}
+
+static void vga_lowmem_test_write(void *opaque, hwaddr addr,
+                                      uint64_t data, unsigned size)
+{
+    DEBUG("addr: 0x%08"PRIx64", size: %d\n", addr, size);
+}
+
+static const MemoryRegionOps vga_lowmem_test_ops = {
+    .read = vga_lowmem_test_read,
+    .write = vga_lowmem_test_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
 static int vga_map_lowmem(AssignedDevice *dev){
 
     dev->vga_region.vgafd = open("/dev/mem",O_RDWR);
@@ -2012,9 +2033,14 @@ static int vga_map_lowmem(AssignedDevice *dev){
         return -1;
     }
 
+#ifdef DEBUG_MEM_MAP
+    memory_region_init_io(&dev->vga_region.vga_lowmem, OBJECT(dev), &vga_lowmem_test_ops,
+                          dev, "vga-lowmem-test", VGA_LOWMEM_SIZE);
+#else
     memory_region_init_ram_ptr(&dev->vga_region.vga_lowmem,
                                 OBJECT(dev), "vga-lowmem",
                                 VGA_LOWMEM_SIZE, dev->vga_region.vga_lowmem_virtbase);
+#endif
 
     memory_region_add_subregion_overlap(pci_address_space(&dev->dev),
                                         0x000a0000,
