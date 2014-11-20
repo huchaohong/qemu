@@ -59,6 +59,9 @@
 #define DEBUG(fmt, ...)
 #endif
 
+#define VGA_LOWMEM  0xa0000
+#define VGA_LOWMEM_SIZE  0x20000
+
 typedef struct PCIRegion {
     int type;           /* Memory or port I/O */
     int valid;
@@ -116,6 +119,12 @@ typedef enum AssignedIRQType {
     ASSIGNED_IRQ_MSIX
 } AssignedIRQType;
 
+typedef struct VgaRegion{
+    int vgafd;
+    MemoryRegion vga_lowmem;
+    uint8_t *vga_lowmem_virtbase;
+}VgaRegion;
+
 typedef struct AssignedDevice {
     PCIDevice dev;
     PCIHostDeviceAddress host;
@@ -145,6 +154,8 @@ typedef struct AssignedDevice {
     MemoryRegion mmio;
     char *configfd_name;
     int32_t bootindex;
+    
+    VgaRegion vga_region;
 } AssignedDevice;
 
 static void assigned_dev_update_irq_routing(PCIDevice *dev);
@@ -952,6 +963,16 @@ static void free_assigned_device(AssignedDevice *dev)
 
     if (dev->real_device.config_fd >= 0) {
         close(dev->real_device.config_fd);
+    }
+
+    if (dev->vga_region.vga_lowmem_virtbase){
+        if (munmap(dev->vga_region.vga_lowmem_virtbase, VGA_LOWMEM_SIZE)){
+            error_report("Failed to unmap /dev/mem vga region");
+        }
+    }
+
+    if (dev->vga_region.vgafd >= 0){
+        close(dev->vga_region.vgafd);
     }
 
     free_msi_virqs(dev);
@@ -1973,6 +1994,37 @@ static void reset_assigned_device(DeviceState *dev)
     assigned_dev_pci_write_config(pci_dev, PCI_COMMAND, 0, 1);
 }
 
+static int vga_map_lowmem(AssignedDevice *dev){
+
+    dev->vga_region.vgafd = open("/dev/mem",O_RDWR);
+    if (dev->vga_region.vgafd < 0){
+        DEBUG("open /dev/mem failed\n");
+        return -1;
+    }
+
+    dev->vga_region.vga_lowmem_virtbase = mmap(NULL, VGA_LOWMEM_SIZE, PROT_WRITE | PROT_READ, 
+            MAP_SHARED, dev->vga_region.vgafd, (off_t)VGA_LOWMEM);
+    if (dev->vga_region.vga_lowmem_virtbase == MAP_FAILED){
+        dev->vga_region.vga_lowmem_virtbase = NULL;
+        error_report("error mmap /dev/mem %s", strerror(errno));
+        close(dev->vga_region.vgafd);
+        dev->vga_region.vgafd = -1;
+        return -1;
+    }
+
+    memory_region_init_ram_ptr(&dev->vga_region.vga_lowmem,
+                                OBJECT(dev), "vga-lowmem",
+                                VGA_LOWMEM_SIZE, dev->vga_region.vga_lowmem_virtbase);
+
+    memory_region_add_subregion_overlap(pci_address_space(&dev->dev),
+                                        0x000a0000,
+                                        &dev->vga_region.vga_lowmem,
+                                        1);
+
+
+    return 0;
+}
+
 static int assigned_initfn(struct PCIDevice *pci_dev)
 {
     AssignedDevice *dev = DO_UPCAST(AssignedDevice, dev, pci_dev);
@@ -2055,6 +2107,12 @@ static int assigned_initfn(struct PCIDevice *pci_dev)
     }
 
     assigned_dev_load_option_rom(dev);
+
+    if (is_igd(dev)){
+        if (vga_map_lowmem(dev)){
+            goto assigned_out;       
+        }
+    }
 
     return 0;
 
