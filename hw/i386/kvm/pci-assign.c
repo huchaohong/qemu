@@ -48,6 +48,8 @@
 #define IORESOURCE_PREFETCH 0x00002000  /* No side effects */
 #define IORESOURCE_MEM_64   0x00100000
 
+#define PCI_VENDOR_ID_ATI  0x1002
+
 //#define DEVICE_ASSIGNMENT_DEBUG
 
 #ifdef DEVICE_ASSIGNMENT_DEBUG
@@ -87,7 +89,31 @@ typedef struct AssignedDevRegion {
     pcibus_t e_size;    /* emulated size of region in bytes */
     pcibus_t r_size;    /* real size of region in bytes */
     PCIRegion *region;
+    QLIST_HEAD(, PAQuirk) quirks;
 } AssignedDevRegion;
+
+typedef struct PAQuirk{
+    MemoryRegion mem;
+    struct AssignedDevice *vdev;
+    QLIST_ENTRY(PAQuirk) next;
+    struct {
+        uint32_t base_offset:TARGET_PAGE_BITS;
+        uint32_t address_offset:TARGET_PAGE_BITS;
+        uint32_t address_size:3;
+        uint32_t bar:3;
+
+        uint32_t address_match;
+        uint32_t address_mask;
+
+        uint32_t address_val:TARGET_PAGE_BITS;
+        uint32_t data_offset:TARGET_PAGE_BITS;
+        uint32_t data_size:3;
+
+        uint8_t flags;
+        uint8_t read_flags;
+        uint8_t write_flags;
+    } data;
+}PAQuirk;
 
 #define ASSIGNED_DEVICE_PREFER_MSI_BIT  0
 #define ASSIGNED_DEVICE_SHARE_INTX_BIT  1
@@ -110,6 +136,19 @@ typedef enum AssignedIRQType {
     ASSIGNED_IRQ_MSIX
 } AssignedIRQType;
 
+typedef struct VgaRegion{
+    MemoryRegion mem;
+
+    /*for mmio*/
+    int fd;
+    uint8_t *virtbase;
+
+    /*for io*/
+    uint32_t offset; 
+
+    QLIST_HEAD(, PAQuirk) quirks;
+}VgaRegion;
+
 typedef struct AssignedDevice {
     PCIDevice dev;
     PCIHostDeviceAddress host;
@@ -118,6 +157,7 @@ typedef struct AssignedDevice {
     int intpin;
     AssignedDevRegion v_addrs[PCI_NUM_REGIONS - 1];
     PCIDevRegions real_device;
+    VgaRegion vga[QEMU_PCI_VGA_NUM_REGIONS];
     PCIINTxRoute intx_route;
     AssignedIRQType assigned_irq_type;
     struct {
@@ -219,6 +259,30 @@ static uint32_t slow_bar_readl(void *opaque, hwaddr addr)
     return r;
 }
 
+static uint32_t slow_bar_read(void *opaque, hwaddr addr, unsigned size)
+{
+    uint32_t data;
+
+    switch(size){
+    case 1:
+        data = slow_bar_readb(opaque, addr);
+        break;
+    case 2:
+        data = slow_bar_readw(opaque, addr);
+        break;
+    case 4:
+        data = slow_bar_readl(opaque, addr);
+        break;
+    default:
+        hw_error("pci-assign: unsupported read size, %d bytes", size);
+        break;
+    }
+
+    return data;
+}
+
+
+
 static void slow_bar_writeb(void *opaque, hwaddr addr, uint32_t val)
 {
     AssignedDevRegion *d = opaque;
@@ -244,6 +308,23 @@ static void slow_bar_writel(void *opaque, hwaddr addr, uint32_t val)
 
     DEBUG("addr=0x" TARGET_FMT_plx " val=0x%08x\n", addr, val);
     *out = val;
+}
+
+static void slow_bar_write(void *opaque, hwaddr addr, uint32_t val, unsigned size)
+{
+    switch(size){
+    case 1:
+        slow_bar_writeb(opaque, addr, val);
+        break;
+    case 2:
+        slow_bar_writew(opaque, addr, val);
+        break;
+    case 4:
+        slow_bar_writel(opaque, addr, val);
+        break;
+    default:
+        hw_error("pci-assign: unsupported write size, %d bytes", size);
+    }   
 }
 
 static const MemoryRegionOps slow_bar_ops = {
@@ -394,6 +475,449 @@ static uint8_t pci_find_cap_offset(PCIDevice *d, uint8_t cap, uint8_t start)
     return 0;
 }
 
+static bool assigned_dev_range_contained(uint64_t first1, uint64_t len1,
+        uint64_t first2, uint64_t len2){
+    return (first1 >= first2 && first1 + len1 <= first2 + len2);
+}
+
+static bool assigned_dev_flags_enabled(uint8_t flags, uint8_t mask)
+{
+    return (mask && (flags & mask) == mask);
+}
+
+
+static uint32_t assigned_dev_pci_read_config(PCIDevice *pci_dev,
+                                             uint32_t address, int len);
+
+
+static void assigned_dev_pci_write_config(PCIDevice *pci_dev, uint32_t address,
+                                          uint32_t val, int len);
+
+static uint64_t assigned_dev_generic_window_quirk_read(void *opaque,
+                                               hwaddr addr, unsigned size)
+{
+    PAQuirk *quirk = opaque;
+    AssignedDevice *vdev = quirk->vdev;
+    uint64_t data;
+
+    if (assigned_dev_flags_enabled(quirk->data.flags, quirk->data.read_flags) &&
+        ranges_overlap(addr, size,
+                       quirk->data.data_offset, quirk->data.data_size)) {
+        hwaddr offset = addr - quirk->data.data_offset;
+
+        if (!assigned_dev_range_contained(addr, size, quirk->data.data_offset,
+                                  quirk->data.data_size)) {
+            hw_error("%s: window data read not fully contained: %s",
+                     __func__, memory_region_name(&quirk->mem));
+        }
+
+        data = assigned_dev_pci_read_config(&vdev->dev,
+                                    quirk->data.address_val + offset, size);
+
+        DEBUG("%s read(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", %d) = 0x%"
+                PRIx64"\n", memory_region_name(&quirk->mem), vdev->host.domain,
+                vdev->host.bus, vdev->host.slot, vdev->host.function,
+                quirk->data.bar, addr, size, data);
+    } else {
+        data = slow_bar_read(&vdev->v_addrs[quirk->data.bar],
+                             addr + quirk->data.base_offset, size);
+    }
+
+    return data;
+}
+
+static void assigned_dev_generic_window_quirk_write(void *opaque, hwaddr addr,
+                                            uint64_t data, unsigned size)
+{
+    PAQuirk *quirk = opaque;
+    AssignedDevice *vdev = quirk->vdev;
+
+    if (ranges_overlap(addr, size,
+                       quirk->data.address_offset, quirk->data.address_size)) {
+
+        if (addr != quirk->data.address_offset) {
+            hw_error("%s: offset write into address window: %s",
+                     __func__, memory_region_name(&quirk->mem));
+        }
+
+        if ((data & ~quirk->data.address_mask) == quirk->data.address_match) {
+            quirk->data.flags |= quirk->data.write_flags |
+                                 quirk->data.read_flags;
+            quirk->data.address_val = data & quirk->data.address_mask;
+        } else {
+            quirk->data.flags &= ~(quirk->data.write_flags |
+                                   quirk->data.read_flags);
+        }
+    }
+
+    if (assigned_dev_flags_enabled(quirk->data.flags, quirk->data.write_flags) &&
+        ranges_overlap(addr, size,
+                       quirk->data.data_offset, quirk->data.data_size)) {
+        hwaddr offset = addr - quirk->data.data_offset;
+
+        if (!assigned_dev_range_contained(addr, size, quirk->data.data_offset,
+                                  quirk->data.data_size)) {
+            hw_error("%s: window data write not fully contained: %s",
+                     __func__, memory_region_name(&quirk->mem));
+        }
+
+        assigned_dev_pci_write_config(&vdev->dev,
+                              quirk->data.address_val + offset, data, size);
+        DEBUG("%s write(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", 0x%"
+                PRIx64", %d)\n", memory_region_name(&quirk->mem),
+                vdev->host.domain, vdev->host.bus, vdev->host.slot,
+                vdev->host.function, quirk->data.bar, addr, data, size);
+        return;
+    }
+
+    slow_bar_write(&vdev->v_addrs[quirk->data.bar],
+                   addr + quirk->data.base_offset, data, size);
+}
+
+static const MemoryRegionOps assigned_dev_generic_window_quirk = {
+    .read = assigned_dev_generic_window_quirk_read,
+    .write = assigned_dev_generic_window_quirk_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+static uint64_t assigned_dev_generic_quirk_read(void *opaque,
+                                        hwaddr addr, unsigned size)
+{
+    PAQuirk *quirk = opaque;
+    AssignedDevice *vdev = quirk->vdev;
+    hwaddr base = quirk->data.address_match & TARGET_PAGE_MASK;
+    hwaddr offset = quirk->data.address_match & ~TARGET_PAGE_MASK;
+    uint64_t data;
+
+    if (assigned_dev_flags_enabled(quirk->data.flags, quirk->data.read_flags) &&
+        ranges_overlap(addr, size, offset, quirk->data.address_mask + 1)) {
+        if (!assigned_dev_range_contained(addr, size, offset,
+                                  quirk->data.address_mask + 1)) {
+            hw_error("%s: read not fully contained: %s",
+                     __func__, memory_region_name(&quirk->mem));
+        }
+
+        data = assigned_dev_pci_read_config(&vdev->dev, addr - offset, size);
+
+        DEBUG("%s read(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", %d) = 0x%"
+                PRIx64"\n", memory_region_name(&quirk->mem), vdev->host.domain,
+                vdev->host.bus, vdev->host.slot, vdev->host.function,
+                quirk->data.bar, addr + base, size, data);
+    } else {
+        data = slow_bar_read(&vdev->v_addrs[quirk->data.bar], addr + base, size);
+    }
+
+    return data;
+}
+
+static void assigned_dev_generic_quirk_write(void *opaque, hwaddr addr,
+                                     uint64_t data, unsigned size)
+{
+    PAQuirk *quirk = opaque;
+    AssignedDevice *vdev = quirk->vdev;
+    hwaddr base = quirk->data.address_match & TARGET_PAGE_MASK;
+    hwaddr offset = quirk->data.address_match & ~TARGET_PAGE_MASK;
+
+    if (assigned_dev_flags_enabled(quirk->data.flags, quirk->data.write_flags) &&
+        ranges_overlap(addr, size, offset, quirk->data.address_mask + 1)) {
+        if (!assigned_dev_range_contained(addr, size, offset,
+                                  quirk->data.address_mask + 1)) {
+            hw_error("%s: write not fully contained: %s",
+                     __func__, memory_region_name(&quirk->mem));
+        }
+
+        assigned_dev_pci_write_config(&vdev->dev, addr - offset, data, size);
+
+        DEBUG("%s write(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", 0x%"
+                PRIx64", %d)\n", memory_region_name(&quirk->mem),
+                vdev->host.domain, vdev->host.bus, vdev->host.slot,
+                vdev->host.function, quirk->data.bar, addr + base, data, size);
+    } else {
+        slow_bar_write(&vdev->v_addrs[quirk->data.bar], addr + base, data, size);
+    }
+}
+
+static const MemoryRegionOps assigned_dev_generic_quirk = {
+    .read = assigned_dev_generic_quirk_read,
+    .write = assigned_dev_generic_quirk_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+static void assigned_dev_ati_bar4_window_quirk(AssignedDevice *pci_dev,unsigned long nr)
+{
+    PCIDevice *pdev = &pci_dev->dev;
+    PAQuirk *quirk;
+
+    if (nr != 4 || pci_get_word(pdev->config + PCI_VENDOR_ID) != PCI_VENDOR_ID_ATI){
+        return;
+    }
+
+    quirk = g_malloc0(sizeof(*quirk));
+    quirk->vdev = pci_dev;
+    quirk->data.address_size = 4;
+    quirk->data.data_offset = 4;
+    quirk->data.data_size = 4;
+    quirk->data.address_match = 0x4000;
+    quirk->data.address_mask = PCIE_CONFIG_SPACE_SIZE - 1;
+    quirk->data.bar = nr;
+    quirk->data.read_flags = quirk->data.write_flags = 1;
+
+    memory_region_init_io(&quirk->mem, OBJECT(pci_dev),
+                          &assigned_dev_generic_window_quirk, quirk,
+                          "pci-assign-ati-bar4-window-quirk", 8);
+    memory_region_add_subregion_overlap(&pci_dev->v_addrs[nr].real_iomem,
+                          quirk->data.base_offset, &quirk->mem, 1);
+
+    QLIST_INSERT_HEAD(&pci_dev->v_addrs[nr].quirks, quirk, next);
+
+    DEBUG("Enabled ATI/AMD BAR4 window quirk for device %04x:%02x:%02x.%x\n",
+            pci_dev->host.domain, pci_dev->host.bus, pci_dev->host.slot,
+            pci_dev->host.function);
+}
+
+static void assigned_dev_ati_bar2_4000_quirk(AssignedDevice *pci_dev,unsigned long nr)
+{
+    PCIDevice *pdev = &pci_dev->dev;
+    PAQuirk *quirk;
+
+    /* Only enable on newer devices where BAR2 is 64bit */
+    if (nr != 2 || !(pci_dev->real_device.regions[nr].type & IORESOURCE_MEM_64) ||
+        pci_get_word(pdev->config + PCI_VENDOR_ID) != PCI_VENDOR_ID_ATI) {
+        return;
+    }
+
+    quirk = g_malloc0(sizeof(*quirk));
+    quirk->vdev = pci_dev;
+    quirk->data.flags = quirk->data.read_flags = quirk->data.write_flags = 1;
+    quirk->data.address_match = 0x4000;
+    quirk->data.address_mask = PCIE_CONFIG_SPACE_SIZE - 1;
+    quirk->data.bar = nr;
+
+    memory_region_init_io(&quirk->mem, OBJECT(pci_dev), &assigned_dev_generic_quirk, quirk,
+                          "pci-assign-ati-bar2-4000-quirk",
+                          TARGET_PAGE_ALIGN(quirk->data.address_mask + 1));
+    memory_region_add_subregion_overlap(&pci_dev->v_addrs[nr].real_iomem,
+                          quirk->data.address_match & TARGET_PAGE_MASK,
+                          &quirk->mem, 1);
+
+    QLIST_INSERT_HEAD(&pci_dev->v_addrs[nr].quirks, quirk, next);
+
+    DEBUG("Enabled ATI/AMD BAR2 0x4000 quirk for device %04x:%02x:%02x.%x\n",
+            pci_dev->host.domain, pci_dev->host.bus, pci_dev->host.slot,
+            pci_dev->host.function);
+    
+}
+
+static void assigned_dev_bar_quirk_setup(AssignedDevice *pci_dev, unsigned long regions_num)
+{
+    assigned_dev_ati_bar4_window_quirk(pci_dev, regions_num);
+    assigned_dev_ati_bar2_4000_quirk(pci_dev, regions_num);
+}
+
+static int vga_map_mmio(AssignedDevice *pci_dev)
+{
+    VgaRegion *region = &pci_dev->vga[QEMU_PCI_VGA_MEM];
+    
+    region->fd = open("/dev/mem", O_RDWR);
+    if (region->fd < 0){
+        error_report("open /dev/mem failed\n");
+        return -1;
+    }
+
+    region->virtbase = mmap(NULL, QEMU_PCI_VGA_MEM_SIZE, PROT_WRITE | PROT_READ,
+                            MAP_SHARED, region->fd, QEMU_PCI_VGA_MEM_BASE);
+    if (region->virtbase == MAP_FAILED){
+        region->virtbase = NULL;
+        error_report("error mmap /dev/mem %s",strerror(errno));
+        close(region->fd);
+        region->fd = -1;
+        return -1;
+    }
+
+    memory_region_init_ram_ptr(&region->mem,
+                               OBJECT(pci_dev),"pci-assign-vga-mmio@0xa0000",
+                               QEMU_PCI_VGA_MEM_SIZE, region->virtbase);
+
+    return 0;
+}
+
+
+static uint64_t vga_io_ops_read(void *opaque,
+                                        hwaddr addr, unsigned size)
+{
+    uint64_t data;
+
+    VgaRegion *region = (VgaRegion*)opaque;
+    off_t port = addr + region->offset;
+        
+    switch(size){
+    case 1:
+        data = inb(port);
+        break;
+    case 2:
+        data = inw(port);
+        break;
+    case 4:
+        data = inl(port);
+        break;
+    default:
+        hw_error("vga io read size error, %d bytes",size);
+        break;
+    }
+
+    return data;
+}
+
+
+static void vga_io_ops_write(void *opaque, hwaddr addr,
+                                         uint64_t val, unsigned size)
+{
+    VgaRegion *region = (VgaRegion*)opaque;
+    off_t port = addr + region->offset;
+
+    switch(size){
+    case 1:
+        outb(val, port);
+        break;
+    case 2:
+        outw(val, port);
+        break;
+    case 4:
+        outl(val, port);
+        break;
+    default:
+        hw_error("vga io write size error, %d bytes",size);
+        break;
+    }
+}
+
+static const MemoryRegionOps vga_io_ops = {
+    .read = vga_io_ops_read,
+    .write = vga_io_ops_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
+static int vga_map_low_io(AssignedDevice *pci_dev){
+    VgaRegion *region = &pci_dev->vga[QEMU_PCI_VGA_IO_LO];
+    
+    region->offset = QEMU_PCI_VGA_IO_LO_BASE;
+    ioperm(QEMU_PCI_VGA_IO_LO_BASE, QEMU_PCI_VGA_IO_LO_SIZE, 1);
+
+    memory_region_init_io(&region->mem, OBJECT(pci_dev), 
+                          &vga_io_ops, region,
+                          "pci-assign-vga-io@0x3b0",
+                          QEMU_PCI_VGA_IO_LO_SIZE);
+
+    return 0;
+}
+
+static int vga_map_hi_io(AssignedDevice *pci_dev){
+    VgaRegion *region = &pci_dev->vga[QEMU_PCI_VGA_IO_HI];
+
+    region->offset = QEMU_PCI_VGA_IO_HI_BASE;
+    ioperm(QEMU_PCI_VGA_IO_HI_BASE, QEMU_PCI_VGA_IO_HI_SIZE, 1);
+
+    memory_region_init_io(&region->mem, OBJECT(pci_dev), 
+                          &vga_io_ops, region,
+                          "pci-assign-vga-io@0x3c0",
+                          QEMU_PCI_VGA_IO_HI_SIZE);
+
+
+    return 0;
+}
+
+
+static uint64_t assigned_dev_ati_3c3_quirk_read(void *opaque,
+                                        hwaddr addr, unsigned size)
+{
+    PAQuirk *quirk = opaque;
+    AssignedDevice *vdev = quirk->vdev;
+    uint64_t data = assigned_dev_pci_read_config(&vdev->dev,
+                                         PCI_BASE_ADDRESS_0 + (4 * 4) + 1,
+                                         size);
+    DEBUG("%s(0x3c3, 1) = 0x%"PRIx64"\n", __func__, data);
+
+    return data;
+}
+
+static const MemoryRegionOps assigned_dev_ati_3c3_quirk = {
+    .read = assigned_dev_ati_3c3_quirk_read,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+
+static void assigned_dev_probe_ati_3c3_quirk(AssignedDevice *pci_dev)
+{
+    PCIDevice *pdev = &pci_dev->dev;
+    PAQuirk *quirk;
+
+    if (pci_get_word(pdev->config + PCI_VENDOR_ID) != PCI_VENDOR_ID_ATI) {
+        return;
+    }
+
+    /*
+     * As long as the BAR is >= 256 bytes it will be aligned such that the
+     * lower byte is always zero.  Filter out anything else, if it exists.
+     */
+    if (!(pci_dev->real_device.regions[4].type & IORESOURCE_IO) ||
+            pci_dev->real_device.regions[4].size < 256){
+        return;
+    }
+
+    quirk = g_malloc0(sizeof(*quirk));
+    quirk->vdev = pci_dev;
+
+    memory_region_init_io(&quirk->mem, OBJECT(pci_dev), &assigned_dev_ati_3c3_quirk, quirk,
+                          "pci-assign-ati-3c3-quirk", 1);
+    memory_region_add_subregion(&pci_dev->vga[QEMU_PCI_VGA_IO_HI].mem,
+                                3 /* offset 3 bytes from 0x3c0 */, &quirk->mem);
+
+    QLIST_INSERT_HEAD(&pci_dev->vga[QEMU_PCI_VGA_IO_HI].quirks,
+                      quirk, next);
+
+    DEBUG("Enabled ATI/AMD quirk 0x3c3 BAR4for device %04x:%02x:%02x.%x\n",
+            pci_dev->host.domain, pci_dev->host.bus, pci_dev->host.slot,
+            pci_dev->host.function);
+}
+
+static void assigned_dev_vga_quirk_setup(AssignedDevice *pci_dev)
+{
+    assigned_dev_probe_ati_3c3_quirk(pci_dev);
+}
+
+static int assigned_dev_map_vga_regions(AssignedDevice *pci_dev)
+{
+    int ret;
+
+    ret = vga_map_mmio(pci_dev);
+    if (ret != 0){
+        goto fail;
+    }
+
+    ret = vga_map_low_io(pci_dev);
+    if (ret != 0){
+        goto fail;
+    }
+
+    ret = vga_map_hi_io(pci_dev);
+    if (ret != 0){
+        goto fail;
+    }
+
+    pci_register_vga(&pci_dev->dev, &pci_dev->vga[QEMU_PCI_VGA_MEM].mem,
+                     &pci_dev->vga[QEMU_PCI_VGA_IO_LO].mem,
+                     &pci_dev->vga[QEMU_PCI_VGA_IO_HI].mem);
+
+    
+    assigned_dev_vga_quirk_setup(pci_dev);
+
+    return 0;
+
+fail:
+    //TODO
+    return ret;
+}
+
 static void assigned_dev_register_regions(PCIRegion *io_regions,
                                           unsigned long regions_num,
                                           AssignedDevice *pci_dev,
@@ -464,6 +988,8 @@ static void assigned_dev_register_regions(PCIRegion *io_regions,
             assigned_dev_iomem_setup(&pci_dev->dev, i, cur_region->size);
             pci_register_bar((PCIDevice *) pci_dev, i, t,
                              &pci_dev->v_addrs[i].container);
+
+            assigned_dev_bar_quirk_setup(pci_dev, i);
             continue;
         } else {
             /* handle port io regions */
@@ -493,8 +1019,12 @@ static void assigned_dev_register_regions(PCIRegion *io_regions,
             pci_register_bar((PCIDevice *) pci_dev, i,
                              PCI_BASE_ADDRESS_SPACE_IO,
                              &pci_dev->v_addrs[i].container);
+            
+            assigned_dev_bar_quirk_setup(pci_dev, i);
         }
     }
+
+    assigned_dev_map_vga_regions(pci_dev);
 
     /* success */
 }
