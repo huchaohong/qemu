@@ -50,7 +50,7 @@
 
 #define PCI_VENDOR_ID_ATI  0x1002
 
-//#define DEVICE_ASSIGNMENT_DEBUG
+#define DEVICE_ASSIGNMENT_DEBUG
 
 #ifdef DEVICE_ASSIGNMENT_DEBUG
 #define DEBUG(fmt, ...)                                       \
