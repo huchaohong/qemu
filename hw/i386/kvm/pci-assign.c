@@ -1701,6 +1701,8 @@ static uint32_t assigned_dev_pci_read_config(PCIDevice *pci_dev,
     uint32_t virt_val = pci_default_read_config(pci_dev, address, len);
     uint32_t real_val, emulate_mask, full_emulation_mask;
 
+    uint32_t ret_val;
+
     emulate_mask = 0;
     memcpy(&emulate_mask, assigned_dev->emulate_config_read + address, len);
     emulate_mask = le32_to_cpu(emulate_mask);
@@ -1709,10 +1711,17 @@ static uint32_t assigned_dev_pci_read_config(PCIDevice *pci_dev,
 
     if (emulate_mask != full_emulation_mask) {
         real_val = assigned_dev_pci_read(pci_dev, address, len);
-        return (virt_val & emulate_mask) | (real_val & ~emulate_mask);
+        ret_val = (virt_val & emulate_mask) | (real_val & ~emulate_mask);
     } else {
-        return virt_val;
+        ret_val =  virt_val;
     }
+
+
+    DEBUG("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x\n", __func__,
+            assigned_dev->host.domain, assigned_dev->host.bus, assigned_dev->host.slot,
+            assigned_dev->host.function, address, len, ret_val);
+
+    return ret_val;
 }
 
 static void assigned_dev_pci_write_config(PCIDevice *pci_dev, uint32_t address,
@@ -1722,6 +1731,11 @@ static void assigned_dev_pci_write_config(PCIDevice *pci_dev, uint32_t address,
     uint16_t old_cmd = pci_get_word(pci_dev->config + PCI_COMMAND);
     uint32_t emulate_mask, full_emulation_mask;
     int ret;
+
+
+    DEBUG("%s(%04x:%02x:%02x.%x, @0x%x, 0x%x, len=0x%x)\n", __func__,
+            assigned_dev->host.domain, assigned_dev->host.bus, assigned_dev->host.slot,
+            assigned_dev->host.function, address, val, len);
 
     pci_default_write_config(pci_dev, address, val, len);
 
