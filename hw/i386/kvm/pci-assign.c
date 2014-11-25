@@ -179,6 +179,9 @@ typedef struct AssignedDevice {
     MemoryRegion mmio;
     char *configfd_name;
     int32_t bootindex;
+
+    void *romp;
+    unsigned int rom_size;
 } AssignedDevice;
 
 static void assigned_dev_update_irq_routing(PCIDevice *dev);
@@ -514,14 +517,21 @@ static uint64_t assigned_dev_generic_window_quirk_read(void *opaque,
         data = assigned_dev_pci_read_config(&vdev->dev,
                                     quirk->data.address_val + offset, size);
 
-        DEBUG("%s read(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", %d) = 0x%"
-                PRIx64"\n", memory_region_name(&quirk->mem), vdev->host.domain,
-                vdev->host.bus, vdev->host.slot, vdev->host.function,
-                quirk->data.bar, addr, size, data);
     } else {
-        data = slow_bar_read(&vdev->v_addrs[quirk->data.bar],
-                             addr + quirk->data.base_offset, size);
+        if (vdev->real_device.regions[quirk->data.bar].type & IORESOURCE_MEM){
+            data = slow_bar_read(&vdev->v_addrs[quirk->data.bar], 
+                    addr + quirk->data.base_offset, size);
+        }else{
+            data = assigned_dev_ioport_read(&vdev->v_addrs[quirk->data.bar], 
+                    addr + quirk->data.base_offset, size);
+        }
     }
+
+    DEBUG("%s read(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", %d) = 0x%"
+            PRIx64"\n", memory_region_name(&quirk->mem), vdev->host.domain,
+            vdev->host.bus, vdev->host.slot, vdev->host.function,
+            quirk->data.bar, addr, size, data);
+
 
     return data;
 }
@@ -563,15 +573,23 @@ static void assigned_dev_generic_window_quirk_write(void *opaque, hwaddr addr,
 
         assigned_dev_pci_write_config(&vdev->dev,
                               quirk->data.address_val + offset, data, size);
-        DEBUG("%s write(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", 0x%"
+    }else{
+
+        if (vdev->real_device.regions[quirk->data.bar].type & IORESOURCE_MEM){
+            slow_bar_write(&vdev->v_addrs[quirk->data.bar], 
+                    addr + quirk->data.base_offset, data, size);
+        }else{
+            assigned_dev_ioport_write(&vdev->v_addrs[quirk->data.bar], 
+                    addr + quirk->data.base_offset, data, size);
+        }
+    }
+
+    DEBUG("%s write(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", 0x%"
                 PRIx64", %d)\n", memory_region_name(&quirk->mem),
                 vdev->host.domain, vdev->host.bus, vdev->host.slot,
                 vdev->host.function, quirk->data.bar, addr, data, size);
-        return;
-    }
 
-    slow_bar_write(&vdev->v_addrs[quirk->data.bar],
-                   addr + quirk->data.base_offset, data, size);
+
 }
 
 static const MemoryRegionOps assigned_dev_generic_window_quirk = {
@@ -599,13 +617,19 @@ static uint64_t assigned_dev_generic_quirk_read(void *opaque,
 
         data = assigned_dev_pci_read_config(&vdev->dev, addr - offset, size);
 
-        DEBUG("%s read(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", %d) = 0x%"
-                PRIx64"\n", memory_region_name(&quirk->mem), vdev->host.domain,
-                vdev->host.bus, vdev->host.slot, vdev->host.function,
-                quirk->data.bar, addr + base, size, data);
     } else {
-        data = slow_bar_read(&vdev->v_addrs[quirk->data.bar], addr + base, size);
+        if (vdev->real_device.regions[quirk->data.bar].type & IORESOURCE_MEM){
+            data = slow_bar_read(&vdev->v_addrs[quirk->data.bar], addr + base, size);
+        }else{
+            data = assigned_dev_ioport_read(&vdev->v_addrs[quirk->data.bar], addr + base, size);
+        }
     }
+
+    DEBUG("%s read(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", %d) = 0x%"
+            PRIx64"\n", memory_region_name(&quirk->mem), vdev->host.domain,
+            vdev->host.bus, vdev->host.slot, vdev->host.function,
+            quirk->data.bar, addr + base, size, data);
+
 
     return data;
 }
@@ -628,13 +652,19 @@ static void assigned_dev_generic_quirk_write(void *opaque, hwaddr addr,
 
         assigned_dev_pci_write_config(&vdev->dev, addr - offset, data, size);
 
-        DEBUG("%s write(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", 0x%"
-                PRIx64", %d)\n", memory_region_name(&quirk->mem),
-                vdev->host.domain, vdev->host.bus, vdev->host.slot,
-                vdev->host.function, quirk->data.bar, addr + base, data, size);
     } else {
-        slow_bar_write(&vdev->v_addrs[quirk->data.bar], addr + base, data, size);
+        if (vdev->real_device.regions[quirk->data.bar].type & IORESOURCE_MEM){
+            slow_bar_write(&vdev->v_addrs[quirk->data.bar], addr + base, data, size);
+        }else{
+            assigned_dev_ioport_write(&vdev->v_addrs[quirk->data.bar], addr + base, data, size);
+        }   
     }
+
+    DEBUG("%s write(%04x:%02x:%02x.%x:BAR%d+0x%"HWADDR_PRIx", 0x%"
+            PRIx64", %d)\n", memory_region_name(&quirk->mem),
+            vdev->host.domain, vdev->host.bus, vdev->host.slot,
+            vdev->host.function, quirk->data.bar, addr + base, data, size);
+
 }
 
 static const MemoryRegionOps assigned_dev_generic_quirk = {
@@ -714,6 +744,79 @@ static void assigned_dev_bar_quirk_setup(AssignedDevice *pci_dev, unsigned long 
     assigned_dev_ati_bar2_4000_quirk(pci_dev, regions_num);
 }
 
+static uint64_t vga_mmio_read(void *opaque,
+                        hwaddr addr, unsigned size)
+{
+    VgaRegion *region = (VgaRegion*)opaque;
+
+    uint64_t data;
+    
+    uint8_t *in_b;
+    uint16_t *in_w;
+    uint32_t *in_l;
+
+    switch(size){
+    case 1:
+        in_b = (uint8_t*)(region->virtbase + addr);
+        data = *in_b;
+        break;
+    case 2:
+        in_w = (uint16_t*)(region->virtbase + addr);
+        data = *in_w;
+        break;
+    case 4:
+        in_l = (uint32_t*)(region->virtbase + addr);
+        data = *in_l;
+        break;
+    default:
+        hw_error("pci-assign: unsupported read size, %d bytes",size);
+        break;
+    }
+
+    DEBUG("(0x%"HWADDR_PRIx", %d) = 0x%"PRIx64"\n",
+            region->offset + addr, size, data);
+
+    return data;
+}
+
+
+static void vga_mmio_write(void *opaque, hwaddr addr,
+                                     uint64_t data, unsigned size)
+{
+    VgaRegion *region = (VgaRegion*)opaque;
+    
+    uint8_t *out_b;
+    uint16_t *out_w;
+    uint32_t *out_l;
+
+    switch(size){
+    case 1:
+        out_b = region->virtbase + addr;
+        *out_b = data;
+        break;
+    case 2:
+        out_w = (uint16_t*)(region->virtbase + addr);
+        *out_w = data;
+        break;
+    case 4:
+        out_l = (uint32_t*)(region->virtbase + addr);
+        *out_l = data;
+        break;
+    default:
+        hw_error("pci-assign: unsupported size, %d bytes",size);
+        break;
+    }
+
+    DEBUG("0x%"HWADDR_PRIx", 0x%"PRIx64", %d\n",
+          region->offset+addr,data,size);
+}
+
+static const MemoryRegionOps vga_mmio_ops = {
+    .read = vga_mmio_read,
+    .write = vga_mmio_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
 static int vga_map_mmio(AssignedDevice *pci_dev)
 {
     VgaRegion *region = &pci_dev->vga[QEMU_PCI_VGA_MEM];
@@ -724,6 +827,7 @@ static int vga_map_mmio(AssignedDevice *pci_dev)
         return -1;
     }
 
+    region->offset = QEMU_PCI_VGA_MEM_BASE;
     region->virtbase = mmap(NULL, QEMU_PCI_VGA_MEM_SIZE, PROT_WRITE | PROT_READ,
                             MAP_SHARED, region->fd, QEMU_PCI_VGA_MEM_BASE);
     if (region->virtbase == MAP_FAILED){
@@ -734,15 +838,21 @@ static int vga_map_mmio(AssignedDevice *pci_dev)
         return -1;
     }
 
+#if 0
     memory_region_init_ram_ptr(&region->mem,
                                OBJECT(pci_dev),"pci-assign-vga-mmio@0xa0000",
                                QEMU_PCI_VGA_MEM_SIZE, region->virtbase);
 
+#endif
+
+    memory_region_init_io(&region->mem,OBJECT(pci_dev), &vga_mmio_ops, region,
+                          "pci-assign-vga-mmio@0xa0000",
+                          QEMU_PCI_VGA_MEM_SIZE);
     return 0;
 }
 
 
-static uint64_t vga_io_ops_read(void *opaque,
+static uint64_t vga_io_read(void *opaque,
                                         hwaddr addr, unsigned size)
 {
     uint64_t data;
@@ -765,11 +875,14 @@ static uint64_t vga_io_ops_read(void *opaque,
         break;
     }
 
+    DEBUG("(0x%"HWADDR_PRIx", %d) = 0x%"PRIx64"\n",
+            port, size, data);
+
     return data;
 }
 
 
-static void vga_io_ops_write(void *opaque, hwaddr addr,
+static void vga_io_write(void *opaque, hwaddr addr,
                                          uint64_t val, unsigned size)
 {
     VgaRegion *region = (VgaRegion*)opaque;
@@ -789,11 +902,15 @@ static void vga_io_ops_write(void *opaque, hwaddr addr,
         hw_error("vga io write size error, %d bytes",size);
         break;
     }
+
+
+    DEBUG("0x%"HWADDR_PRIx", 0x%"PRIx64", %d\n",
+            port, val, size);
 }
 
 static const MemoryRegionOps vga_io_ops = {
-    .read = vga_io_ops_read,
-    .write = vga_io_ops_write,
+    .read = vga_io_read,
+    .write = vga_io_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
@@ -825,7 +942,6 @@ static int vga_map_hi_io(AssignedDevice *pci_dev){
 
     return 0;
 }
-
 
 static uint64_t assigned_dev_ati_3c3_quirk_read(void *opaque,
                                         hwaddr addr, unsigned size)
@@ -1717,7 +1833,7 @@ static uint32_t assigned_dev_pci_read_config(PCIDevice *pci_dev,
     }
 
 
-    DEBUG("%s(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x\n", __func__,
+    DEBUG("(%04x:%02x:%02x.%x, @0x%x, len=0x%x) %x\n",
             assigned_dev->host.domain, assigned_dev->host.bus, assigned_dev->host.slot,
             assigned_dev->host.function, address, len, ret_val);
 
@@ -1733,7 +1849,7 @@ static void assigned_dev_pci_write_config(PCIDevice *pci_dev, uint32_t address,
     int ret;
 
 
-    DEBUG("%s(%04x:%02x:%02x.%x, @0x%x, 0x%x, len=0x%x)\n", __func__,
+    DEBUG("(%04x:%02x:%02x.%x, @0x%x, 0x%x, len=0x%x)\n",
             assigned_dev->host.domain, assigned_dev->host.bus, assigned_dev->host.slot,
             assigned_dev->host.function, address, val, len);
 
@@ -2443,6 +2559,34 @@ static void assign_register_types(void)
 
 type_init(assign_register_types)
 
+
+static uint64_t assigned_dev_rom_read(void *opaque, hwaddr addr, unsigned size){
+    AssignedDevice *dev = (AssignedDevice *)opaque;
+    uint64_t val = ((uint64_t)1 << (size * 8)) - 1;
+
+    memcpy(&val,dev->romp + addr, 
+            (addr < dev->rom_size) ? MIN(size, dev->rom_size - addr) : 0);
+
+    DEBUG("%04x:%02x:%02x.%x, 0x%"HWADDR_PRIx", 0x%x) = 0x%"PRIx64"\n",
+            dev->host.domain,dev->host.bus,dev->host.slot,dev->host.function,
+            addr, size,val);
+
+    return val;
+
+}
+
+static void assigned_dev_rom_write(void *opaque, hwaddr addr,
+                                   uint64_t data, unsigned size)
+{
+    
+}
+
+static const MemoryRegionOps assigned_dev_rom_ops = {
+    .read = assigned_dev_rom_read,
+    .write = assigned_dev_rom_write,
+    .endianness = DEVICE_NATIVE_ENDIAN,
+};
+
 /*
  * Scan the assigned devices for the devices that have an option ROM, and then
  * load the corresponding ROM data to RAM. If an error occurs while loading an
@@ -2454,7 +2598,7 @@ static void assigned_dev_load_option_rom(AssignedDevice *dev)
     FILE *fp;
     uint8_t val;
     struct stat st;
-    void *ptr;
+ //   void *ptr;
 
     /* If loading ROM from file, pci handles it */
     if (dev->dev.romfile || !dev->dev.rom_bar) {
@@ -2488,6 +2632,8 @@ static void assigned_dev_load_option_rom(AssignedDevice *dev)
 
     snprintf(name, sizeof(name), "%s.rom",
             object_get_typename(OBJECT(dev)));
+
+#if 0
     memory_region_init_ram(&dev->dev.rom, OBJECT(dev), name, st.st_size,
                            &error_abort);
     vmstate_register_ram(&dev->dev.rom, &dev->dev.qdev);
@@ -2501,6 +2647,23 @@ static void assigned_dev_load_option_rom(AssignedDevice *dev)
                      "or load from file with romfile=\n");
         goto close_rom;
     }
+#endif
+
+    dev->romp = g_malloc0(st.st_size);
+    dev->rom_size = st.st_size;
+
+    memset(dev->romp, 0xff, st.st_size);
+    if (!fread(dev->romp, 1, st.st_size, fp)){
+        error_report("pci-assign: Cannot read from host %s", rom_file);
+        error_printf("Device option ROM contents are probably invalid "
+                     "(check dmesg).\nSkip option ROM probe with rombar=0, "
+                     "or load from file with romfile=\n");
+        goto close_rom;
+    }
+
+
+    memory_region_init_io(&dev->dev.rom, OBJECT(dev), &assigned_dev_rom_ops,
+                          dev, name, st.st_size);
 
     pci_register_bar(&dev->dev, PCI_ROM_SLOT, 0, &dev->dev.rom);
     dev->dev.has_rom = true;
