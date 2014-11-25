@@ -48,7 +48,7 @@
 #define IORESOURCE_PREFETCH 0x00002000  /* No side effects */
 #define IORESOURCE_MEM_64   0x00100000
 
-//#define DEVICE_ASSIGNMENT_DEBUG
+#define DEVICE_ASSIGNMENT_DEBUG
 
 #ifdef DEVICE_ASSIGNMENT_DEBUG
 #define DEBUG(fmt, ...)                                       \
