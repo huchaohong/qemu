@@ -1451,11 +1451,13 @@ static void assign_device(AssignedDevice *dev, Error **errp)
         return;
     }
 
+#if 0
     if (!kvm_check_extension(kvm_state, KVM_CAP_IOMMU)) {
         error_setg(errp, "No IOMMU found.  Unable to assign device \"%s\"",
                    dev->dev.qdev.id);
         return;
     }
+#endif
 
     if (dev->features & ASSIGNED_DEVICE_SHARE_INTX_MASK &&
         kvm_has_intx_set_mask()) {
