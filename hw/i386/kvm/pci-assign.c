@@ -859,6 +859,8 @@ static uint64_t vga_io_read(void *opaque,
 
     VgaRegion *region = (VgaRegion*)opaque;
     off_t port = addr + region->offset;
+    
+    ioperm(port, size ,1);
         
     switch(size){
     case 1:
@@ -887,6 +889,8 @@ static void vga_io_write(void *opaque, hwaddr addr,
 {
     VgaRegion *region = (VgaRegion*)opaque;
     off_t port = addr + region->offset;
+
+    ioperm(port, size, 1);
 
     switch(size){
     case 1:
@@ -918,7 +922,6 @@ static int vga_map_low_io(AssignedDevice *pci_dev){
     VgaRegion *region = &pci_dev->vga[QEMU_PCI_VGA_IO_LO];
     
     region->offset = QEMU_PCI_VGA_IO_LO_BASE;
-    ioperm(QEMU_PCI_VGA_IO_LO_BASE, QEMU_PCI_VGA_IO_LO_SIZE, 1);
 
     memory_region_init_io(&region->mem, OBJECT(pci_dev), 
                           &vga_io_ops, region,
@@ -932,7 +935,6 @@ static int vga_map_hi_io(AssignedDevice *pci_dev){
     VgaRegion *region = &pci_dev->vga[QEMU_PCI_VGA_IO_HI];
 
     region->offset = QEMU_PCI_VGA_IO_HI_BASE;
-    ioperm(QEMU_PCI_VGA_IO_HI_BASE, QEMU_PCI_VGA_IO_HI_SIZE, 1);
 
     memory_region_init_io(&region->mem, OBJECT(pci_dev), 
                           &vga_io_ops, region,
