@@ -3702,7 +3702,6 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
     container->space = space;
     container->fd = fd;
 
-#if 0
     if (ioctl(fd, VFIO_CHECK_EXTENSION, VFIO_TYPE1_IOMMU)) {
         ret = ioctl(group->fd, VFIO_GROUP_SET_CONTAINER, &fd);
         if (ret) {
@@ -3711,6 +3710,7 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
             goto free_container_exit;
         }
 
+#if 0
         ret = ioctl(fd, VFIO_SET_IOMMU, VFIO_TYPE1_IOMMU);
         if (ret) {
             error_report("vfio: failed to set iommu for container: %m");
@@ -3731,7 +3731,7 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
         }
 
         container->iommu_data.type1.initialized = true;
-
+#endif
     } else if (ioctl(fd, VFIO_CHECK_EXTENSION, VFIO_SPAPR_TCE_IOMMU)) {
         ret = ioctl(group->fd, VFIO_GROUP_SET_CONTAINER, &fd);
         if (ret) {
@@ -3740,6 +3740,7 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
             goto free_container_exit;
         }
 
+#if 0
         ret = ioctl(fd, VFIO_SET_IOMMU, VFIO_SPAPR_TCE_IOMMU);
         if (ret) {
             error_report("vfio: failed to set iommu for container: %m");
@@ -3764,13 +3765,13 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
 
         memory_listener_register(&container->iommu_data.type1.listener,
                                  container->space->as);
+#endif
 
-    } else {
+    }else {
         error_report("vfio: No available IOMMU models");
         ret = -EINVAL;
         goto free_container_exit;
     }
-#endif
 
     QLIST_INIT(&container->group_list);
     QLIST_INSERT_HEAD(&space->containers, container, next);
@@ -3780,14 +3781,13 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
 
     return 0;
 
-
 #if 0
 listener_release_exit:
     vfio_listener_release(container);
+#endif
 
 free_container_exit:
     g_free(container);
-#endif
 close_fd_exit:
     close(fd);
 
