@@ -2545,12 +2545,10 @@ static void vfio_iommu_map_notify(Notifier *n, void *data)
         }
     }
 }
-#endif
 
 static void vfio_listener_region_add(MemoryListener *listener,
                                      MemoryRegionSection *section)
 {
-#if 0
     VFIOContainer *container = container_of(listener, VFIOContainer,
                                             iommu_data.type1.listener);
     hwaddr iova, end;
@@ -2651,13 +2649,11 @@ static void vfio_listener_region_add(MemoryListener *listener,
             hw_error("vfio: DMA mapping failed, unable to continue");
         }
     }
-#endif
 }
 
 static void vfio_listener_region_del(MemoryListener *listener,
                                      MemoryRegionSection *section)
 {
-#if 0
     VFIOContainer *container = container_of(listener, VFIOContainer,
                                             iommu_data.type1.listener);
     hwaddr iova, end;
@@ -2716,7 +2712,6 @@ static void vfio_listener_region_del(MemoryListener *listener,
                      "0x%"HWADDR_PRIx") = %d (%m)",
                      container, iova, end - iova, ret);
     }
-#endif
 }
 
 static MemoryListener vfio_memory_listener = {
@@ -2728,6 +2723,7 @@ static void vfio_listener_release(VFIOContainer *container)
 {
     memory_listener_unregister(&container->iommu_data.type1.listener);
 }
+#endif
 
 /*
  * Interrupt setup
@@ -3588,6 +3584,7 @@ static void vfio_pci_reset_handler(void *opaque)
     }
 }
 
+#if 0
 static void vfio_kvm_device_add_group(VFIOGroup *group)
 {
 #ifdef CONFIG_KVM
@@ -3620,6 +3617,7 @@ static void vfio_kvm_device_add_group(VFIOGroup *group)
     }
 #endif
 }
+#endif
 
 static void vfio_kvm_device_del_group(VFIOGroup *group)
 {
@@ -3704,6 +3702,7 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
     container->space = space;
     container->fd = fd;
 
+#if 0
     if (ioctl(fd, VFIO_CHECK_EXTENSION, VFIO_TYPE1_IOMMU)) {
         ret = ioctl(group->fd, VFIO_GROUP_SET_CONTAINER, &fd);
         if (ret) {
@@ -3771,6 +3770,7 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
         ret = -EINVAL;
         goto free_container_exit;
     }
+#endif
 
     QLIST_INIT(&container->group_list);
     QLIST_INSERT_HEAD(&space->containers, container, next);
@@ -3780,12 +3780,14 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
 
     return 0;
 
+
+#if 0
 listener_release_exit:
     vfio_listener_release(container);
 
 free_container_exit:
     g_free(container);
-
+#endif
 close_fd_exit:
     close(fd);
 
@@ -3876,7 +3878,7 @@ static VFIOGroup *vfio_get_group(int groupid, AddressSpace *as)
 
     QLIST_INSERT_HEAD(&group_list, group, next);
 
-    vfio_kvm_device_add_group(group);
+    //vfio_kvm_device_add_group(group);
 
     return group;
 
