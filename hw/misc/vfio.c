@@ -2422,6 +2422,7 @@ static void vfio_pci_write_config(PCIDevice *pdev, uint32_t addr,
     }
 }
 
+#if 0
 /*
  * DMA - Mapping and unmapping for the "type1" IOMMU interface used on x86
  */
@@ -2544,10 +2545,12 @@ static void vfio_iommu_map_notify(Notifier *n, void *data)
         }
     }
 }
+#endif
 
 static void vfio_listener_region_add(MemoryListener *listener,
                                      MemoryRegionSection *section)
 {
+#if 0
     VFIOContainer *container = container_of(listener, VFIOContainer,
                                             iommu_data.type1.listener);
     hwaddr iova, end;
@@ -2648,11 +2651,13 @@ static void vfio_listener_region_add(MemoryListener *listener,
             hw_error("vfio: DMA mapping failed, unable to continue");
         }
     }
+#endif
 }
 
 static void vfio_listener_region_del(MemoryListener *listener,
                                      MemoryRegionSection *section)
 {
+#if 0
     VFIOContainer *container = container_of(listener, VFIOContainer,
                                             iommu_data.type1.listener);
     hwaddr iova, end;
@@ -2711,6 +2716,7 @@ static void vfio_listener_region_del(MemoryListener *listener,
                      "0x%"HWADDR_PRIx") = %d (%m)",
                      container, iova, end - iova, ret);
     }
+#endif
 }
 
 static MemoryListener vfio_memory_listener = {
