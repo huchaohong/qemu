@@ -4243,6 +4243,7 @@ static int vfio_initfn(PCIDevice *pdev)
              vdev->host.function);
     if (stat(path, &st) < 0) {
         error_report("vfio: error: no such host device: %s", path);
+        vfio_deassign_device(vdev);
         return -errno;
     }
 
@@ -4251,6 +4252,7 @@ static int vfio_initfn(PCIDevice *pdev)
     len = readlink(path, iommu_group_path, sizeof(path));
     if (len <= 0 || len >= sizeof(path)) {
         error_report("vfio: error no iommu_group for device");
+        vfio_deassign_device(vdev);
         return len < 0 ? -errno : ENAMETOOLONG;
     }
 
@@ -4259,6 +4261,7 @@ static int vfio_initfn(PCIDevice *pdev)
 
     if (sscanf(group_name, "%d", &groupid) != 1) {
         error_report("vfio: error reading %s: %m", path);
+        vfio_deassign_device(vdev);
         return -errno;
     }
 
@@ -4268,6 +4271,7 @@ static int vfio_initfn(PCIDevice *pdev)
     group = vfio_get_group(groupid, pci_device_iommu_address_space(pdev));
     if (!group) {
         error_report("vfio: failed to get group %d", groupid);
+        vfio_deassign_device(vdev);
         return -ENOENT;
     }
 
@@ -4283,6 +4287,7 @@ static int vfio_initfn(PCIDevice *pdev)
 
             error_report("vfio: error: device %s is already attached", path);
             vfio_put_group(group);
+            vfio_deassign_device(vdev);
             return -EBUSY;
         }
     }
@@ -4291,6 +4296,7 @@ static int vfio_initfn(PCIDevice *pdev)
     if (ret) {
         error_report("vfio: failed to get device %s", path);
         vfio_put_group(group);
+        vfio_deassign_device(vdev);
         return ret;
     }
 
@@ -4376,6 +4382,9 @@ out_put:
     g_free(vdev->emulated_config_bits);
     vfio_put_device(vdev);
     vfio_put_group(group);
+
+
+    vfio_deassign_device(vdev);
     return ret;
 }
 
