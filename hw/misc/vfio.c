@@ -41,6 +41,18 @@
 #include "sysemu/sysemu.h"
 #include "hw/misc/vfio.h"
 
+
+struct vfio_pci_assigned_dev{
+    uint32_t busnr;
+    uint32_t devfn;
+    uint32_t domain;
+};
+
+#define VFIO_PCI_MAGIC  0xCD
+#define VFIO_PCI_ASSIGN_DEV  _IOR(VFIO_PCI_MAGIC, 0, struct vfio_pci_assigned_dev)
+#define VFIO_PCI_DEASSIGN_DEV _IO(VFIO_PCI_MAGIC, 1)
+
+
 /* #define DEBUG_VFIO */
 #ifdef DEBUG_VFIO
 #define DPRINTF(fmt, ...) \
@@ -195,6 +207,7 @@ typedef struct VFIOMSIXInfo {
 
 typedef struct VFIODevice {
     PCIDevice pdev;
+    int pci_fd;
     int fd;
     VFIOINTx intx;
     unsigned int config_size;
@@ -4159,6 +4172,48 @@ static void vfio_unregister_err_notifier(VFIODevice *vdev)
     event_notifier_cleanup(&vdev->err_notifier);
 }
 
+static int vfio_assign_device(VFIODevice *vdev)
+{
+    struct vfio_pci_assigned_dev assigned_dev;
+
+    int fd;
+    fd = open("/dev/vfio/vfio_pci", O_RDWR);
+    if (fd < 0){
+        error_report("vfio: failed to open /dev/vfio/vfio_pci: %m");
+        return -1;
+    }
+
+    vdev->pci_fd = fd;
+
+    assigned_dev.domain = vdev->host.domain;
+    assigned_dev.busnr = vdev->host.bus;
+    assigned_dev.devfn = PCI_DEVFN(vdev->host.slot,vdev->host.function);
+
+    int ret = ioctl(fd, VFIO_PCI_ASSIGN_DEV, &assigned_dev);
+    if (ret < 0){
+        close(fd);
+        vdev->pci_fd = -1;
+        return ret;
+    }
+
+    return 0;
+}
+
+static int vfio_deassign_device(VFIODevice *vdev)
+{
+    int ret;
+
+    if (vdev->pci_fd >= 0){
+        ret = ioctl(vdev->pci_fd, VFIO_PCI_DEASSIGN_DEV);
+        if (ret < 0)
+            return ret;
+
+        close(vdev->pci_fd);
+        vdev->pci_fd = -1;
+    }
+    return 0;    
+}
+
 static int vfio_initfn(PCIDevice *pdev)
 {
     VFIODevice *pvdev, *vdev = DO_UPCAST(VFIODevice, pdev, pdev);
@@ -4168,6 +4223,12 @@ static int vfio_initfn(PCIDevice *pdev)
     struct stat st;
     int groupid;
     int ret;
+
+    ret = vfio_assign_device(vdev);
+    if (ret < 0){
+        error_report("vfio: error assign device failed");
+        return ret;
+    }
 
     /* Check that the host device exists */
     snprintf(path, sizeof(path),
@@ -4329,6 +4390,8 @@ static void vfio_exitfn(PCIDevice *pdev)
     g_free(vdev->rom);
     vfio_put_device(vdev);
     vfio_put_group(group);
+
+    vfio_deassign_device(vdev);
 }
 
 static void vfio_pci_reset(DeviceState *dev)
