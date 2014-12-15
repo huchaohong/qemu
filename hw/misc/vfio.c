@@ -2409,6 +2409,7 @@ static void vfio_pci_write_config(PCIDevice *pdev, uint32_t addr,
     }
 }
 
+#if 0
 /*
  * DMA - Mapping and unmapping for the "type1" IOMMU interface used on x86
  */
@@ -2429,7 +2430,9 @@ static int vfio_dma_unmap(VFIOContainer *container,
 
     return 0;
 }
+#endif
 
+#if 0
 static int vfio_dma_map(VFIOContainer *container, hwaddr iova,
                         ram_addr_t size, void *vaddr, bool readonly)
 {
@@ -2459,7 +2462,9 @@ static int vfio_dma_map(VFIOContainer *container, hwaddr iova,
     DPRINTF("VFIO_MAP_DMA: %d\n", -errno);
     return -errno;
 }
+#endif
 
+#if 0
 static bool vfio_listener_skipped_section(MemoryRegionSection *section)
 {
     return (!memory_region_is_ram(section->mr) &&
@@ -2531,7 +2536,9 @@ static void vfio_iommu_map_notify(Notifier *n, void *data)
         }
     }
 }
+#endif
 
+#if 0
 static void vfio_listener_region_add(MemoryListener *listener,
                                      MemoryRegionSection *section)
 {
@@ -2709,6 +2716,7 @@ static void vfio_listener_release(VFIOContainer *container)
 {
     memory_listener_unregister(&container->iommu_data.type1.listener);
 }
+#endif
 
 /*
  * Interrupt setup
@@ -3693,6 +3701,7 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
             goto free_container_exit;
         }
 
+#if 0
         ret = ioctl(fd, VFIO_SET_IOMMU, VFIO_TYPE1_IOMMU);
         if (ret) {
             error_report("vfio: failed to set iommu for container: %m");
@@ -3713,6 +3722,7 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
         }
 
         container->iommu_data.type1.initialized = true;
+#endif
 
     } else if (ioctl(fd, VFIO_CHECK_EXTENSION, VFIO_SPAPR_TCE_IOMMU)) {
         ret = ioctl(group->fd, VFIO_GROUP_SET_CONTAINER, &fd);
@@ -3722,6 +3732,7 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
             goto free_container_exit;
         }
 
+#if 0
         ret = ioctl(fd, VFIO_SET_IOMMU, VFIO_SPAPR_TCE_IOMMU);
         if (ret) {
             error_report("vfio: failed to set iommu for container: %m");
@@ -3747,6 +3758,7 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
         memory_listener_register(&container->iommu_data.type1.listener,
                                  container->space->as);
 
+    #endif
     } else {
         error_report("vfio: No available IOMMU models");
         ret = -EINVAL;
@@ -3761,8 +3773,8 @@ static int vfio_connect_container(VFIOGroup *group, AddressSpace *as)
 
     return 0;
 
-listener_release_exit:
-    vfio_listener_release(container);
+//listener_release_exit:
+//    vfio_listener_release(container);
 
 free_container_exit:
     g_free(container);
@@ -4163,12 +4175,13 @@ static int vfio_initfn(PCIDevice *pdev)
 {
     VFIODevice *pvdev, *vdev = DO_UPCAST(VFIODevice, pdev, pdev);
     VFIOGroup *group;
-    char path[PATH_MAX], iommu_group_path[PATH_MAX], *group_name;
-    ssize_t len;
-    struct stat st;
-    int groupid;
+    char path[PATH_MAX];//iommu_group_path[PATH_MAX];//,*group_name;
+//    ssize_t len;
+//    struct stat st;
+    int groupid = 1;
     int ret;
 
+#if 0
     /* Check that the host device exists */
     snprintf(path, sizeof(path),
              "/sys/bus/pci/devices/%04x:%02x:%02x.%01x/",
@@ -4197,6 +4210,7 @@ static int vfio_initfn(PCIDevice *pdev)
 
     DPRINTF("%s(%04x:%02x:%02x.%x) group %d\n", __func__, vdev->host.domain,
             vdev->host.bus, vdev->host.slot, vdev->host.function, groupid);
+#endif
 
     group = vfio_get_group(groupid, pci_device_iommu_address_space(pdev));
     if (!group) {
