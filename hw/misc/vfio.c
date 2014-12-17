@@ -273,7 +273,7 @@ static QLIST_HEAD(, VFIOGroup)
  * initialized, this file descriptor is only released on QEMU exit and
  * we'll re-use it should another vfio device be attached before then.
  */
-static int vfio_kvm_device_fd = -1;
+//static int vfio_kvm_device_fd = -1;
 #endif
 
 static void vfio_disable_interrupts(VFIODevice *vdev);
@@ -3577,6 +3577,7 @@ static void vfio_pci_reset_handler(void *opaque)
     }
 }
 
+#if 0
 static void vfio_kvm_device_add_group(VFIOGroup *group)
 {
 #ifdef CONFIG_KVM
@@ -3629,6 +3630,7 @@ static void vfio_kvm_device_del_group(VFIOGroup *group)
     }
 #endif
 }
+#endif
 
 static VFIOAddressSpace *vfio_get_address_space(AddressSpace *as)
 {
@@ -3869,7 +3871,7 @@ static VFIOGroup *vfio_get_group(int groupid, AddressSpace *as)
 
     QLIST_INSERT_HEAD(&group_list, group, next);
 
-    vfio_kvm_device_add_group(group);
+   // vfio_kvm_device_add_group(group);
 
     return group;
 
@@ -3888,7 +3890,7 @@ static void vfio_put_group(VFIOGroup *group)
         return;
     }
 
-    vfio_kvm_device_del_group(group);
+  //  vfio_kvm_device_del_group(group);
     vfio_disconnect_container(group);
     QLIST_REMOVE(group, next);
     DPRINTF("vfio_put_group: close group->fd\n");
