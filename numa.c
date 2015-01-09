@@ -22,6 +22,7 @@
  * THE SOFTWARE.
  */
 
+#include <sys/mman.h>
 #include "sysemu/sysemu.h"
 #include "exec/cpu-common.h"
 #include "qemu/bitmap.h"
@@ -279,14 +280,27 @@ void memory_region_allocate_system_memory(MemoryRegion *mr, Object *owner,
                                           const char *name,
                                           uint64_t ram_size)
 {
-    uint64_t addr = 0;
-    int i;
+    //uint64_t addr = 0;
+    //int i;
 
     if (nb_numa_nodes == 0 || !have_memdevs) {
         allocate_system_memory_nonnuma(mr, owner, name, ram_size);
         return;
     }
 
+    int mem_fd = open("/dev/mem",O_RDWR);
+    if (mem_fd < 0){
+        error_report("open /dev/mem failed\n");
+        exit(1);
+    }
+
+    void *host_mem_map = mmap(NULL,ram_size,PROT_READ|PROT_WRITE,
+            MAP_SHARED,mem_fd, (off_t)0);
+    close(mem_fd);
+
+    memory_region_init_ram_ptr(mr, owner, name, ram_size, host_mem_map);
+
+#if 0
     memory_region_init(mr, owner, name, ram_size);
     for (i = 0; i < MAX_NODES; i++) {
         Error *local_err = NULL;
@@ -313,6 +327,7 @@ void memory_region_allocate_system_memory(MemoryRegion *mr, Object *owner,
         vmstate_register_ram_global(seg);
         addr += size;
     }
+#endif
 }
 
 static int query_memdev(Object *obj, void *opaque)

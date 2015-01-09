@@ -1192,6 +1192,7 @@ FWCfgState *pc_memory_init(MachineState *machine,
 {
     int linux_boot, i;
     MemoryRegion *ram, *option_rom_mr;
+    MemoryRegion *ram_below_1m;
     MemoryRegion *ram_below_4g, *ram_above_4g;
     FWCfgState *fw_cfg;
     PCMachineState *pcms = PC_MACHINE(machine);
@@ -1208,6 +1209,11 @@ FWCfgState *pc_memory_init(MachineState *machine,
     memory_region_allocate_system_memory(ram, NULL, "pc.ram",
                                          machine->ram_size);
     *ram_memory = ram;
+
+    ram_below_1m = g_malloc(sizeof(*ram_below_1m));
+    memory_region_init_ram(ram_below_1m, NULL, "ram-below-1m", 1024*1024, NULL);
+    memory_region_add_subregion_overlap(system_memory, 0, ram_below_1m, 1);
+
     ram_below_4g = g_malloc(sizeof(*ram_below_4g));
     memory_region_init_alias(ram_below_4g, NULL, "ram-below-4g", ram,
                              0, below_4g_mem_size);
